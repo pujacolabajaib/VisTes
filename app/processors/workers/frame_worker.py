@@ -726,6 +726,8 @@ class FrameWorker(threading.Thread):
         return border_mask
             
     def swap_core(self, img, kps_5, kps=False, s_e=None, t_e=None, parameters=None, control=None, dfm_model=False): # img = RGB
+        kps_swapped_face_all_for_current_swap = None
+        swapped_face_true_contour_mask = None
         s_e = s_e if isinstance(s_e, np.ndarray) else []
         t_e = t_e if isinstance(t_e, np.ndarray) else []
         parameters = parameters or {}
@@ -1210,8 +1212,8 @@ class FrameWorker(threading.Thread):
         swap_mask = torch.mul(swap_mask, border_mask)
         swap_mask = t512_mask(swap_mask)
 
-        kps_swapped_face_all_for_current_swap = None
-        if parameters.get("DFLXSegEnableToggle", False):
+        # kps_swapped_face_all_for_current_swap is now initialized at the top of swap_core
+        if parameters.get("DFLXSegEnableToggle", False): # This 'if' is for the landmark detection logic itself
             # Prepare for landmark detection
             swapped_face_bbox = [0, 0, 511, 511] # Bbox for the entire 512x512 swap tensor
     
@@ -1225,20 +1227,32 @@ class FrameWorker(threading.Thread):
             # conversion to float and normalization (e.g., .float() / 255.0).
             current_swap_for_lmk = swap.clone() 
     
-            temp_kps_list = self.models_processor.face_landmark_detectors.get_landmarks(
-                img_tensor=current_swap_for_lmk,
-                bboxes=[swapped_face_bbox],
-                mode=landmark_mode_for_swapped,
-                score_threshold=parameters.get('LandmarkDetectScoreSlider', 40.0)/100.0, # Re-use existing slider for score, ensure float division
-                from_points=False # We are providing a bounding box
-            )
+            # Corrected call:
+            # run_detect_landmark returns: kps_5, kps_all, scores (scores might be for kps_5 or kps_all depending on detector)
+            # We need kps_all for the contour.
+            # The variable kps_swapped_face_all_for_current_swap should already be initialized to None before this conditional block.
+            
+            temp_kps_5, temp_kps_all, _ = self.models_processor.face_landmark_detectors.run_detect_landmark(
+                    img=current_swap_for_lmk,
+                    bbox=swapped_face_bbox,
+                    det_kpss=np.array([], dtype=np.float32), # Ensure det_kpss is a numpy array, even if empty
+                    detect_mode=landmark_mode_for_swapped,
+                    score=parameters.get('LandmarkDetectScoreSlider', 40.0)/100.0, # This score is often for kps_5
+                    from_points=False
+                )
     
-            if temp_kps_list and temp_kps_list[0] is not None and len(temp_kps_list[0]) > 0:
-                kps_swapped_face_all_for_current_swap = temp_kps_list[0]
-                # At this point, kps_swapped_face_all_for_current_swap holds the landmarks
-                # or is None if detection failed. This variable will be used in the next plan steps.
+            if isinstance(temp_kps_all, np.ndarray) and temp_kps_all.size > 0:
+                kps_swapped_face_all_for_current_swap = temp_kps_all
+            else:
+                # If temp_kps_all is empty or not an ndarray, try to use temp_kps_5 if it's populated
+                # (some detectors might only populate kps_5 if kps_all is not their primary output type for 'all')
+                # This is a fallback, ideally landmark_mode_for_swapped ('203') should yield temp_kps_all.
+                if isinstance(temp_kps_5, np.ndarray) and temp_kps_5.size > 0 and landmark_mode_for_swapped == '5': # Only use kps_5 if mode was '5'
+                     kps_swapped_face_all_for_current_swap = temp_kps_5
+                else:
+                     kps_swapped_face_all_for_current_swap = None # Ensure it remains None if no valid landmarks found
 
-        swapped_face_true_contour_mask = None 
+        # swapped_face_true_contour_mask is now initialized at the top of swap_core
         if kps_swapped_face_all_for_current_swap is not None and len(kps_swapped_face_all_for_current_swap) > 0:
             # Ensure kps are integers for cv2.convexHull and cv2.fillConvexPoly
             # Landmarks are usually float, convert to int32 for OpenCV

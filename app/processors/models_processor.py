@@ -391,8 +391,8 @@ class ModelsProcessor(QtCore.QObject):
         return self.face_masks.apply_occlusion(img, amount)
     
     # ---- MODIFIED SECTION ----
-    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0):
-        return self.face_masks.apply_dfl_xseg(img, amount, mouth, parameters, dfl_inside_amount, dfl_outside_amount)
+    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0, swapped_contour_mask_256=None):
+        return self.face_masks.apply_dfl_xseg(img, amount, mouth, parameters, dfl_inside_amount=dfl_inside_amount, dfl_outside_amount=dfl_outside_amount, swapped_contour_mask_256=swapped_contour_mask_256)
     # ---- END MODIFIED SECTION ----
     
     def apply_face_parser(self, img, parameters, mode):
