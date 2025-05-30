@@ -764,7 +764,7 @@ class FrameWorker(threading.Thread):
             input_face_affined = input_face_affined.permute(1, 2, 0)
             input_face_affined = torch.div(input_face_affined, 255.0)
 
-            swap, prev_face = self.get_swapped_and_prev_face(output, input_face_affined, original_face_512, latent, itex, dim, swapper_model, dfm_model, parameters)
+            swap, prev_face = self.get_swapped_and_prev_face(output, input_face_affined, original_face_512, latent, itex, dim, swapper_model, dfm_model, parameters, )
         
         else:
             swap = original_face_512
@@ -878,20 +878,35 @@ class FrameWorker(threading.Thread):
                 # Clamping, um Werte über 1 zu vermeiden
                 adjusted_mask = torch.clamp(adjusted_mask, 0, 1)            
              
-        if parameters["DFLXSegEnableToggle"]:
-        
-            if parameters["XSegMouthEnableToggle"] and parameters["DFLXSegSizeSlider"] != parameters["DFLXSeg2SizeSlider"]:
+        if parameters.get("DFLXSegEnableToggle", False): # Check if DFLXSeg is enabled
+            if parameters.get("XSegMouthEnableToggle", False) and parameters.get("DFLXSegSizeSlider") != parameters.get("DFLXSeg2SizeSlider"):
+                # Ensure mouth and mouth_original are initialized if FaceParser wasn't run
+                if 'mouth' not in locals(): mouth = torch.zeros((1, 256, 256), device=self.models_processor.device) 
+                if 'mouth_original' not in locals(): mouth_original = torch.zeros((1, 256, 256), device=self.models_processor.device)
+                
                 mouth = t256_mask(mouth)
                 mouth_original = t256_mask(mouth_original)
                 mouth = torch.max(mouth, mouth_original)
             else:
-                mouth = 0
+                mouth = torch.zeros((1, 256, 256), device=self.models_processor.device) # Ensure mouth is defined
             
-            img_mask = self.models_processor.apply_dfl_xseg(original_face_256, -parameters["DFLXSegSizeSlider"], mouth, parameters)
-            img_mask = t128_mask(img_mask)
-            swap_mask = torch.mul(swap_mask, 1 - img_mask)
-            #gauss = transforms.GaussianBlur(parameters['OccluderXSegBlurSlider']*2+1, (parameters['OccluderXSegBlurSlider']+1)*0.2)
-            #swap_mask = gauss(swap_mask)
+            dfl_inside_amount = parameters.get('DFLXSegInsideAmountSlider', 100) / 100.0
+            dfl_outside_amount = parameters.get('DFLXSegOutsideAmountSlider', 100) / 100.0
+            
+            # Note: DFLXSegFaceThresholdSlider is handled inside apply_dfl_xseg in face_masks.py
+            # The 'amount' parameter for dilation/erosion is -parameters["DFLXSegSizeSlider"]
+
+            img_mask = self.models_processor.apply_dfl_xseg(
+                original_face_256, 
+                -parameters.get("DFLXSegSizeSlider",0), 
+                mouth, 
+                parameters, # Pass the whole parameters dict
+                dfl_inside_amount,
+                dfl_outside_amount
+            )
+            img_mask = t128_mask(img_mask) # Ensure mask is resized correctly
+            swap_mask = torch.mul(swap_mask, 1 - img_mask) # Original logic expects inverted mask
+            # Blurring for DFLXSeg is now handled within apply_dfl_xseg itself based on OccluderXSegBlurSlider
 
         # CLIPs
         if parameters["ClipEnableToggle"]:

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 class FaceMasks:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
+        pass 
 
     def apply_occlusion(self, img, amount):
         img = torch.div(img, 255)
@@ -66,20 +67,32 @@ class FaceMasks:
             self.models_processor.syncvec.cpu()
         self.models_processor.models['Occluder'].run_with_iobinding(io_binding)
 
-    def apply_dfl_xseg(self, img, amount, mouth, parameters):
+    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0):
         amount2 = -parameters["DFLXSeg2SizeSlider"]
         
-        img = img.type(torch.float32)
-        img = torch.div(img, 255)
-        img = torch.unsqueeze(img, 0).contiguous()
-        outpred = torch.ones((256,256), dtype=torch.float32, device=self.models_processor.device).contiguous()
+        face_threshold_slider_val = parameters.get('DFLXSegFaceThresholdSlider', 20) 
+        face_threshold = face_threshold_slider_val / 100.0
+        # Print statements removed from here
 
-        self.run_dfl_xseg(img, outpred)
+        img_prepared = img.type(torch.float32) 
+        img_prepared = torch.div(img_prepared, 255)
+        img_prepared = torch.unsqueeze(img_prepared, 0).contiguous()
+        
+        raw_xseg_output = torch.ones((256,256), dtype=torch.float32, device=self.models_processor.device).contiguous()
+        self.run_dfl_xseg(img_prepared, raw_xseg_output)
 
-        outpred = torch.clamp(outpred, min=0.0, max=1.0)
-        outpred[outpred < 0.1] = 0
-        # invert values to mask areas to keep
-        outpred = 1.0 - outpred
+        raw_xseg_output = torch.clamp(raw_xseg_output, min=0.0, max=1.0)
+        
+        face_region_mask = raw_xseg_output < face_threshold
+        
+        modulated_xseg_output = torch.zeros_like(raw_xseg_output)
+        modulated_xseg_output[face_region_mask] = raw_xseg_output[face_region_mask] * dfl_inside_amount
+        modulated_xseg_output[~face_region_mask] = raw_xseg_output[~face_region_mask] * dfl_outside_amount
+        
+        modulated_xseg_output = torch.clamp(modulated_xseg_output, 0.0, 1.0)
+        modulated_xseg_output[modulated_xseg_output < 0.1] = 0
+        
+        outpred = 1.0 - modulated_xseg_output
         outpred = torch.unsqueeze(outpred, 0).type(torch.float32)
 
         if amount2 != amount:
@@ -87,55 +100,45 @@ class FaceMasks:
 
         if amount > 0:
             kernel = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
-
             for _ in range(int(amount)):
                 outpred = torch.nn.functional.conv2d(outpred, kernel, padding=(1, 1))
                 outpred = torch.clamp(outpred, 0, 1)
-
-            #outpred = torch.squeeze(outpred)
-
-        if amount < 0:
+        elif amount < 0: 
             outpred = torch.neg(outpred)
             outpred = torch.add(outpred, 1)
             kernel = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
-
             for _ in range(int(-amount)):
                 outpred = torch.nn.functional.conv2d(outpred, kernel, padding=(1, 1))
                 outpred = torch.clamp(outpred, 0, 1)
-
-            #outpred = torch.squeeze(outpred)
             outpred = torch.neg(outpred)
             outpred = torch.add(outpred, 1)
         
-        gauss = transforms.GaussianBlur(parameters['OccluderXSegBlurSlider']*2+1, (parameters['OccluderXSegBlurSlider']+1)*0.2)
-        outpred = gauss(outpred)  
+        gauss_blur_occluder = parameters.get('OccluderXSegBlurSlider', 0)
+        if gauss_blur_occluder > 0:
+            gauss = transforms.GaussianBlur(gauss_blur_occluder*2+1, (gauss_blur_occluder+1)*0.2)
+            outpred = gauss(outpred)  
+        
         if amount2 != amount:
             if amount2 > 0:
                 kernel2 = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
-
                 for _ in range(int(amount2)):
                     outpred2 = torch.nn.functional.conv2d(outpred2, kernel2, padding=(1, 1))
                     outpred2 = torch.clamp(outpred2, 0, 1)
-
-                #outpred2 = torch.squeeze(outpred2)
-
-            if amount2 < 0:
+            elif amount2 < 0: 
                 outpred2 = torch.neg(outpred2)
                 outpred2 = torch.add(outpred2, 1)
                 kernel2 = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
-
                 for _ in range(int(-amount2)):
                     outpred2 = torch.nn.functional.conv2d(outpred2, kernel2, padding=(1, 1))
                     outpred2 = torch.clamp(outpred2, 0, 1)
-
-                #outpred2 = torch.squeeze(outpred2)
                 outpred2 = torch.neg(outpred2)
                 outpred2 = torch.add(outpred2, 1)
                 
-            gauss = transforms.GaussianBlur(parameters['XSeg2BlurSlider']*2+1, (parameters['XSeg2BlurSlider']+1)*0.2)
-            outpred2 = gauss(outpred2) 
+            gauss_blur_2 = parameters.get('XSeg2BlurSlider', 0) 
+            if gauss_blur_2 > 0: 
+                 gauss2 = transforms.GaussianBlur(gauss_blur_2*2+1, (gauss_blur_2+1)*0.2)
+                 outpred2 = gauss2(outpred2) 
             
-            #print("outpred, outpred2, mouth: ", outpred.shape, outpred2.shape, mouth.shape)
             outpred[mouth > 0.9] = outpred2[mouth > 0.9]
 
         outpred = torch.reshape(outpred, (1, 256, 256))
@@ -202,7 +205,7 @@ class FaceMasks:
             10: parameters['NoseParserTextureSlider'],
             11: parameters['MouthParserTextureSlider'],
             12: parameters['MouthParserTextureSlider'],
-            13: parameters['MouthParserTextureSlider'],
+            13: parameters['LowerLipParserSlider'],
             14: parameters['NeckParserTextureSlider'],
         }
 
@@ -316,7 +319,7 @@ class FaceMasks:
             if attribute_value > 0:
                 attribute_mask = torch.isin(outpred, torch.tensor([attribute], device=self.models_processor.device))
                 attribute_mask = attribute_mask.float().unsqueeze(0).unsqueeze(0)  # (1, 1, 512, 512)
-                for _ in range(int(attribute_value)):
+                for _ in range(int(attribute_value)): 
                     attribute_mask = torch.nn.functional.conv2d(attribute_mask, kernel, padding=(1, 1))
                     attribute_mask = torch.clamp(attribute_mask, 0, 1)
                 face_parses.append(attribute_mask)
@@ -626,5 +629,3 @@ class FaceMasks:
         )
 
         return result.unsqueeze(0)  # (1, H, W)
-
-

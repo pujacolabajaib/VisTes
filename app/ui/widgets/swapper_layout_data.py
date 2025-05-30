@@ -475,6 +475,42 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Grows or shrinks the occluded region.'
         },
+        'DFLXSegInsideAmountSlider': {
+            'level': 2,
+            'label': 'DFL Inside Amount',
+            'min_value': '0',
+            'max_value': '200',
+            'default': '100',
+            'step': 1,
+            'decimals': 2,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Controls DFL XSeg intensity inside the face mask. 100 = normal, <100 = gentler, >100 = stronger.'
+        },
+        'DFLXSegOutsideAmountSlider': {
+            'level': 2,
+            'label': 'DFL Outside Amount',
+            'min_value': '0',
+            'max_value': '200',
+            'default': '100',
+            'step': 1,
+            'decimals': 2,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Controls DFL XSeg intensity outside the face mask. 100 = normal, <100 = gentler, >100 = stronger.'
+        },
+        'DFLXSegFaceThresholdSlider': {
+            'level': 2,
+            'label': 'DFL Face Threshold',
+            'min_value': '0',
+            'max_value': '100',
+            'default': '20', 
+            'step': 1,
+            'decimals': 2,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Threshold to distinguish face from background for DFL XSeg. Lower values expand the "inside" area. (Value / 100)'
+        },
         'XSeg2BlurSlider': {
             'level': 1,
             'label': 'XSeg2 Blur',
