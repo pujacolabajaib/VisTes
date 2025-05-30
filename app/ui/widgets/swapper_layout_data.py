@@ -511,6 +511,50 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Threshold to distinguish face from background for DFL XSeg. Higher values expand the "inside" area, while lower values make it tighter/more confident. (Value / 100)'
         },
+        'DFLXSegSkinAmountSlider': {
+            'level': 2,
+            'label': 'DFL Skin Amount',
+            'min_value': '-20',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjusts DFL XSeg dilation/erosion specifically for the main face skin area (cheeks, forehead). Positive values dilate, negative values erode.'
+        },
+        'DFLXSegEyesAmountSlider': {
+            'level': 2,
+            'label': 'DFL Eyes Amount',
+            'min_value': '-20',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjusts DFL XSeg dilation/erosion specifically for the eye regions. Positive values dilate, negative values erode.'
+        },
+        'DFLXSegNoseAmountSlider': {
+            'level': 2,
+            'label': 'DFL Nose Amount',
+            'min_value': '-20',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjusts DFL XSeg dilation/erosion specifically for the nose region. Positive values dilate, negative values erode.'
+        },
+        'DFLXSegHairAmountSlider': {
+            'level': 2,
+            'label': 'DFL Hair Amount',
+            'min_value': '-20',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjusts DFL XSeg dilation/erosion specifically for the hair region. Positive values dilate, negative values erode.'
+        },
         'XSeg2BlurSlider': {
             'level': 1,
             'label': 'XSeg2 Blur',

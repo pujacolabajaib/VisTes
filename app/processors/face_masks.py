@@ -67,7 +67,7 @@ class FaceMasks:
             self.models_processor.syncvec.cpu()
         self.models_processor.models['Occluder'].run_with_iobinding(io_binding)
 
-    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0, swapped_contour_mask_256=None):
+    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0, swapped_contour_mask_256=None, regional_adjustments=None):
         amount2 = -parameters["DFLXSeg2SizeSlider"]
         
         face_threshold_slider_val = parameters.get('DFLXSegFaceThresholdSlider', 20) 
@@ -90,7 +90,7 @@ class FaceMasks:
             # If swapped_contour_mask_256 has a channel dimension (e.g., 1x256x256), squeeze it.
             if swapped_contour_mask_256_bool.dim() == 3 and swapped_contour_mask_256_bool.shape[0] == 1:
                 swapped_contour_mask_256_bool = swapped_contour_mask_256_bool.squeeze(0)
-            
+
             # Check for shape mismatch (e.g. if current_xseg_face_region is 256x256)
             if swapped_contour_mask_256_bool.shape == current_xseg_face_region.shape:
                 face_region_mask = current_xseg_face_region | swapped_contour_mask_256_bool
@@ -157,6 +157,44 @@ class FaceMasks:
             
             outpred[mouth > 0.9] = outpred2[mouth > 0.9]
 
+        if regional_adjustments:
+            for region_mask_256, region_amount in regional_adjustments:
+                if region_mask_256 is None or region_amount == 0: # Skip if no mask or no adjustment
+                    continue
+
+                # Ensure region_mask_256 is boolean and on the correct device
+                # It should be (256, 256) or (1, 256, 256)
+                active_region = (region_mask_256 > 0.5).to(outpred.device)
+                if active_region.dim() == 3 and active_region.shape[0] == 1:
+                    active_region = active_region.squeeze(0)
+
+                if active_region.shape != outpred.shape[1:]: # outpred is (1, 256, 256)
+                    print(f"Warning: Shape mismatch for regional DFL XSeg. Mask shape: {active_region.shape}, Outpred base shape: {outpred.shape[1:]}")
+                    continue
+
+                # Create a copy of outpred to apply regional amount
+                regional_outpred_component = outpred.clone()
+
+                # Apply dilation/erosion using region_amount
+                # This logic mirrors how 'amount' and 'amount2' are processed
+                if region_amount > 0:
+                    kernel_regional = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
+                    for _ in range(int(region_amount)):
+                        regional_outpred_component = torch.nn.functional.conv2d(regional_outpred_component, kernel_regional, padding=(1, 1))
+                        regional_outpred_component = torch.clamp(regional_outpred_component, 0, 1)
+                elif region_amount < 0:
+                    regional_outpred_component = torch.neg(regional_outpred_component)
+                    regional_outpred_component = torch.add(regional_outpred_component, 1)
+                    kernel_regional = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
+                    for _ in range(int(-region_amount)):
+                        regional_outpred_component = torch.nn.functional.conv2d(regional_outpred_component, kernel_regional, padding=(1, 1))
+                        regional_outpred_component = torch.clamp(regional_outpred_component, 0, 1)
+                    regional_outpred_component = torch.neg(regional_outpred_component)
+                    regional_outpred_component = torch.add(regional_outpred_component, 1)
+
+                # Update the main outpred only in the active region
+                outpred[0, active_region] = regional_outpred_component[0, active_region]
+
         outpred = torch.reshape(outpred, (1, 256, 256))
         return outpred
 
@@ -186,6 +224,32 @@ class FaceMasks:
         self.run_faceparser(img, outpred)
 
         outpred = torch.argmax(outpred.squeeze(0), 0)
+
+        individual_raw_masks = {}
+        # Skin (class 1)
+        individual_raw_masks['skin'] = torch.isin(outpred, torch.tensor([1], device=outpred.device)).float().unsqueeze(0)
+        # Left Eyebrow (class 2)
+        individual_raw_masks['left_eyebrow'] = torch.isin(outpred, torch.tensor([2], device=outpred.device)).float().unsqueeze(0)
+        # Right Eyebrow (class 3)
+        individual_raw_masks['right_eyebrow'] = torch.isin(outpred, torch.tensor([3], device=outpred.device)).float().unsqueeze(0)
+        # Left Eye (class 4)
+        individual_raw_masks['left_eye'] = torch.isin(outpred, torch.tensor([4], device=outpred.device)).float().unsqueeze(0)
+        # Right Eye (class 5)
+        individual_raw_masks['right_eye'] = torch.isin(outpred, torch.tensor([5], device=outpred.device)).float().unsqueeze(0)
+        # Eyeglasses (class 6)
+        individual_raw_masks['eyeglasses'] = torch.isin(outpred, torch.tensor([6], device=outpred.device)).float().unsqueeze(0)
+        # Nose (class 10)
+        individual_raw_masks['nose'] = torch.isin(outpred, torch.tensor([10], device=outpred.device)).float().unsqueeze(0)
+        # Inner Mouth (class 11 - typically 'mouth' in parsers)
+        individual_raw_masks['inner_mouth'] = torch.isin(outpred, torch.tensor([11], device=outpred.device)).float().unsqueeze(0)
+        # Upper Lip (class 12)
+        individual_raw_masks['upper_lip'] = torch.isin(outpred, torch.tensor([12], device=outpred.device)).float().unsqueeze(0)
+        # Lower Lip (class 13)
+        individual_raw_masks['lower_lip'] = torch.isin(outpred, torch.tensor([13], device=outpred.device)).float().unsqueeze(0)
+        # Neck (class 14)
+        individual_raw_masks['neck'] = torch.isin(outpred, torch.tensor([14], device=outpred.device)).float().unsqueeze(0)
+        # Hair (class 17)
+        individual_raw_masks['hair'] = torch.isin(outpred, torch.tensor([17], device=outpred.device)).float().unsqueeze(0)
 
         def create_mask(attributes, iterations):
             mask = torch.isin(outpred, torch.tensor(attributes, device=outpred.device)).float()
@@ -288,7 +352,7 @@ class FaceMasks:
         face_mask = torch.clamp(out_parse_texture, 0, 1)
         bg_mask = torch.clamp(bg_parse_texture, 0, 1)
 
-        return out_parse, face_mask, bg_mask, combined_mouth_mask
+        return out_parse, face_mask, bg_mask, combined_mouth_mask, individual_raw_masks
 
     '''
     def apply_face_parser(self, img, parameters):

@@ -728,6 +728,7 @@ class FrameWorker(threading.Thread):
     def swap_core(self, img, kps_5, kps=False, s_e=None, t_e=None, parameters=None, control=None, dfm_model=False): # img = RGB
         kps_swapped_face_all_for_current_swap = None
         swapped_face_true_contour_mask = None
+        individual_raw_masks_swapped = {}
         s_e = s_e if isinstance(s_e, np.ndarray) else []
         t_e = t_e if isinstance(t_e, np.ndarray) else []
         parameters = parameters or {}
@@ -860,8 +861,8 @@ class FrameWorker(threading.Thread):
         if parameters["FaceParserEnableToggle"] or (parameters["XSegMouthEnableToggle"] and (parameters["DFLXSegSizeSlider"] != parameters["DFLXSeg2SizeSlider"])) or ((parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"]) and parameters["ExcludeMaskEnableToggle"]):
                                                 
             #cv2.imwrite('swap.png', cv2.cvtColor(swap.permute(1, 2, 0).cpu().numpy(), cv2.COLOR_RGB2BGR))
-            mask, texture_mask, bg_mask, mouth = self.models_processor.apply_face_parser(swap, parameters, mode="swap")
-            mask_original, texture_mask_original, bg_mask_original, mouth_original = self.models_processor.apply_face_parser(original_face_512, parameters, mode="original")
+            mask, texture_mask, bg_mask, mouth, individual_raw_masks_swapped = self.models_processor.apply_face_parser(swap, parameters, mode="swap")
+            mask_original, texture_mask_original, bg_mask_original, mouth_original, _ = self.models_processor.apply_face_parser(original_face_512, parameters, mode="original") # Corrected unpacking
                                                                                                                                                                      
             if parameters["FaceParserEnableToggle"]:
                 mask = torch.minimum(mask, mask_original)
@@ -901,14 +902,56 @@ class FrameWorker(threading.Thread):
             swapped_contour_256_for_dfl = None
             if kps_swapped_face_all_for_current_swap is not None and swapped_face_true_contour_mask is not None:
                 # swapped_face_true_contour_mask is 1x512x512. Resize to 1x256x256 for DFL XSeg.
-                # Ensure it's float for interpolation if not already. It should be float from previous step.
                 if swapped_face_true_contour_mask.dtype != torch.float32:
                     swapped_face_true_contour_mask = swapped_face_true_contour_mask.float()
-                    
-                resizer_to_256 = v2.Resize((256, 256), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
-                swapped_contour_256_for_dfl = resizer_to_256(swapped_face_true_contour_mask)
-                # Ensure it's binarized again after resize if interpolation created non-0/1 values
+
+                resizer_to_256_for_contour = v2.Resize((256, 256), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+                swapped_contour_256_for_dfl = resizer_to_256_for_contour(swapped_face_true_contour_mask)
                 swapped_contour_256_for_dfl = (swapped_contour_256_for_dfl > 0.5).float()
+
+            regional_adjustments = []
+            if individual_raw_masks_swapped: # Check if populated by the apply_face_parser call for 'swap'
+                resizer_regional = v2.Resize((256, 256), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+
+                # Helper to process and add a region
+                def add_regional_adjustment(parameter_name, mask_key_or_keys, combine_op=None):
+                    amount = parameters.get(parameter_name, 0)
+                    if amount != 0:
+                        target_device = swap.device # Target device for all tensors
+                        processed_mask = None
+                        if isinstance(mask_key_or_keys, list):
+                            masks_to_combine = []
+                            for key in mask_key_or_keys:
+                                raw_mask = individual_raw_masks_swapped.get(key)
+                                if raw_mask is not None:
+                                    # Ensure raw_mask is on the correct device and is float
+                                    current_mask = raw_mask.to(target_device).float()
+                                    masks_to_combine.append(current_mask)
+
+                            if masks_to_combine:
+                                combined_mask_512 = masks_to_combine[0]
+                                if len(masks_to_combine) > 1:
+                                    if combine_op == 'max':
+                                        for m in masks_to_combine[1:]:
+                                            combined_mask_512 = torch.max(combined_mask_512, m)
+                                    # Add other combine_op if needed, e.g., logical OR for boolean-like float masks
+                                    elif combine_op == 'or': # Assuming masks are 0.0 or 1.0
+                                        for m in masks_to_combine[1:]:
+                                            combined_mask_512 = ((combined_mask_512 + m) > 0.5).float()
+                                processed_mask = combined_mask_512
+                        else: # Single mask key
+                            raw_mask = individual_raw_masks_swapped.get(mask_key_or_keys)
+                            if raw_mask is not None:
+                                processed_mask = raw_mask.to(target_device).float()
+
+                        if processed_mask is not None:
+                            resized_mask = resizer_regional(processed_mask)
+                            regional_adjustments.append(((resized_mask > 0.5).float(), amount))
+
+                add_regional_adjustment('DFLXSegSkinAmountSlider', 'skin')
+                add_regional_adjustment('DFLXSegEyesAmountSlider', ['left_eye', 'right_eye'], combine_op='max')
+                add_regional_adjustment('DFLXSegNoseAmountSlider', 'nose')
+                add_regional_adjustment('DFLXSegHairAmountSlider', 'hair')
 
             img_mask = self.models_processor.apply_dfl_xseg(
                 original_face_256, 
@@ -917,7 +960,8 @@ class FrameWorker(threading.Thread):
                 parameters, # Pass the whole parameters dict
                 dfl_inside_amount,
                 dfl_outside_amount,
-                swapped_contour_mask_256=swapped_contour_256_for_dfl
+                swapped_contour_mask_256=swapped_contour_256_for_dfl,
+                regional_adjustments=regional_adjustments
             )
             img_mask = t128_mask(img_mask) # Ensure mask is resized correctly
             swap_mask = torch.mul(swap_mask, 1 - img_mask) # Original logic expects inverted mask
@@ -1216,22 +1260,22 @@ class FrameWorker(threading.Thread):
         if parameters.get("DFLXSegEnableToggle", False): # This 'if' is for the landmark detection logic itself
             # Prepare for landmark detection
             swapped_face_bbox = [0, 0, 511, 511] # Bbox for the entire 512x512 swap tensor
-    
+
             # Determine landmark detection mode, defaulting to '203' for multi-point
             landmark_mode_for_swapped = control.get('LandmarkDetectModelSelection', '203')
             if landmark_mode_for_swapped == "5": # Ensure it's a multi-point model
                 landmark_mode_for_swapped = "203"
-            
+
             # The 'swap' tensor is CHW, typically float32, range 0-255 at this point.
             # The landmark detectors (e.g., LandmarkDetector203Model) internally handle
             # conversion to float and normalization (e.g., .float() / 255.0).
-            current_swap_for_lmk = swap.clone() 
-    
+            current_swap_for_lmk = swap.clone()
+
             # Corrected call:
             # run_detect_landmark returns: kps_5, kps_all, scores (scores might be for kps_5 or kps_all depending on detector)
             # We need kps_all for the contour.
             # The variable kps_swapped_face_all_for_current_swap should already be initialized to None before this conditional block.
-            
+
             temp_kps_5, temp_kps_all, _ = self.models_processor.face_landmark_detectors.run_detect_landmark(
                     img=current_swap_for_lmk,
                     bbox=swapped_face_bbox,
@@ -1240,7 +1284,7 @@ class FrameWorker(threading.Thread):
                     score=parameters.get('LandmarkDetectScoreSlider', 40.0)/100.0, # This score is often for kps_5
                     from_points=False
                 )
-    
+
             if isinstance(temp_kps_all, np.ndarray) and temp_kps_all.size > 0:
                 kps_swapped_face_all_for_current_swap = temp_kps_all
             else:
@@ -1257,20 +1301,20 @@ class FrameWorker(threading.Thread):
             # Ensure kps are integers for cv2.convexHull and cv2.fillConvexPoly
             # Landmarks are usually float, convert to int32 for OpenCV
             points = np.array(kps_swapped_face_all_for_current_swap, dtype=np.int32)
-    
+
             # Create a mask (512x512, single channel, uint8)
             hull_mask = np.zeros((512, 512), dtype=np.uint8)
-    
+
             # Calculate convex hull
             hull = cv2.convexHull(points)
-    
+
             # Fill the convex hull on the mask
             cv2.fillConvexPoly(hull_mask, hull, 1) # Fill with 1 (or 255 then normalize)
-    
+
             # Convert numpy mask to torch tensor, ensure it's on the correct device (same as 'swap' tensor)
             swapped_face_true_contour_mask = torch.from_numpy(hull_mask).to(swap.device).float() # CHW expected later, so (1, 512, 512)
             swapped_face_true_contour_mask = swapped_face_true_contour_mask.unsqueeze(0) # Add channel dim: 1x512x512
-    
+
             # Apply a small dilation
             # Define a small kernel for dilation (e.g., 3x3 or 5x5)
             # Dilation needs to be done with torch or ensure mask is on CPU for cv2, then move back
@@ -2307,3 +2351,5 @@ class FrameWorker(threading.Thread):
         analysis["low_contrast"] = 1.0 - min(contrast.item() * 10, 1.0)  # Niedrige Standardabweichung = wenig Kontrast
 
         return analysis
+
+[end of app/processors/workers/frame_worker.py]
