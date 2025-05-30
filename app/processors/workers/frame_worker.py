@@ -896,13 +896,26 @@ class FrameWorker(threading.Thread):
             # Note: DFLXSegFaceThresholdSlider is handled inside apply_dfl_xseg in face_masks.py
             # The 'amount' parameter for dilation/erosion is -parameters["DFLXSegSizeSlider"]
 
+            swapped_contour_256_for_dfl = None
+            if kps_swapped_face_all_for_current_swap is not None and swapped_face_true_contour_mask is not None:
+                # swapped_face_true_contour_mask is 1x512x512. Resize to 1x256x256 for DFL XSeg.
+                # Ensure it's float for interpolation if not already. It should be float from previous step.
+                if swapped_face_true_contour_mask.dtype != torch.float32:
+                    swapped_face_true_contour_mask = swapped_face_true_contour_mask.float()
+                    
+                resizer_to_256 = v2.Resize((256, 256), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+                swapped_contour_256_for_dfl = resizer_to_256(swapped_face_true_contour_mask)
+                # Ensure it's binarized again after resize if interpolation created non-0/1 values
+                swapped_contour_256_for_dfl = (swapped_contour_256_for_dfl > 0.5).float()
+
             img_mask = self.models_processor.apply_dfl_xseg(
                 original_face_256, 
                 -parameters.get("DFLXSegSizeSlider",0), 
                 mouth, 
                 parameters, # Pass the whole parameters dict
                 dfl_inside_amount,
-                dfl_outside_amount
+                dfl_outside_amount,
+                swapped_contour_mask_256=swapped_contour_256_for_dfl
             )
             img_mask = t128_mask(img_mask) # Ensure mask is resized correctly
             swap_mask = torch.mul(swap_mask, 1 - img_mask) # Original logic expects inverted mask
@@ -1196,6 +1209,66 @@ class FrameWorker(threading.Thread):
         # Combine border and swap mask, scale, and apply to swap
         swap_mask = torch.mul(swap_mask, border_mask)
         swap_mask = t512_mask(swap_mask)
+
+        kps_swapped_face_all_for_current_swap = None
+        if parameters.get("DFLXSegEnableToggle", False):
+            # Prepare for landmark detection
+            swapped_face_bbox = [0, 0, 511, 511] # Bbox for the entire 512x512 swap tensor
+    
+            # Determine landmark detection mode, defaulting to '203' for multi-point
+            landmark_mode_for_swapped = control.get('LandmarkDetectModelSelection', '203')
+            if landmark_mode_for_swapped == "5": # Ensure it's a multi-point model
+                landmark_mode_for_swapped = "203"
+            
+            # The 'swap' tensor is CHW, typically float32, range 0-255 at this point.
+            # The landmark detectors (e.g., LandmarkDetector203Model) internally handle
+            # conversion to float and normalization (e.g., .float() / 255.0).
+            current_swap_for_lmk = swap.clone() 
+    
+            temp_kps_list = self.models_processor.face_landmark_detectors.get_landmarks(
+                img_tensor=current_swap_for_lmk,
+                bboxes=[swapped_face_bbox],
+                mode=landmark_mode_for_swapped,
+                score_threshold=parameters.get('LandmarkDetectScoreSlider', 40.0)/100.0, # Re-use existing slider for score, ensure float division
+                from_points=False # We are providing a bounding box
+            )
+    
+            if temp_kps_list and temp_kps_list[0] is not None and len(temp_kps_list[0]) > 0:
+                kps_swapped_face_all_for_current_swap = temp_kps_list[0]
+                # At this point, kps_swapped_face_all_for_current_swap holds the landmarks
+                # or is None if detection failed. This variable will be used in the next plan steps.
+
+        swapped_face_true_contour_mask = None 
+        if kps_swapped_face_all_for_current_swap is not None and len(kps_swapped_face_all_for_current_swap) > 0:
+            # Ensure kps are integers for cv2.convexHull and cv2.fillConvexPoly
+            # Landmarks are usually float, convert to int32 for OpenCV
+            points = np.array(kps_swapped_face_all_for_current_swap, dtype=np.int32)
+    
+            # Create a mask (512x512, single channel, uint8)
+            hull_mask = np.zeros((512, 512), dtype=np.uint8)
+    
+            # Calculate convex hull
+            hull = cv2.convexHull(points)
+    
+            # Fill the convex hull on the mask
+            cv2.fillConvexPoly(hull_mask, hull, 1) # Fill with 1 (or 255 then normalize)
+    
+            # Convert numpy mask to torch tensor, ensure it's on the correct device (same as 'swap' tensor)
+            swapped_face_true_contour_mask = torch.from_numpy(hull_mask).to(swap.device).float() # CHW expected later, so (1, 512, 512)
+            swapped_face_true_contour_mask = swapped_face_true_contour_mask.unsqueeze(0) # Add channel dim: 1x512x512
+    
+            # Apply a small dilation
+            # Define a small kernel for dilation (e.g., 3x3 or 5x5)
+            # Dilation needs to be done with torch or ensure mask is on CPU for cv2, then move back
+            # Using torch.nn.functional.max_pool2d as a simple dilation for binary masks
+            # Kernel size for dilation - results in (kernel_size*2-1) effective dilation diameter for square kernel
+            dilation_kernel_size = 5 # e.g., 5 for a 9x9 equivalent effect, adjust as needed
+            # Pad to keep size, max_pool2d is like dilation for binary images
+            padded_mask = torch.nn.functional.pad(swapped_face_true_contour_mask, (dilation_kernel_size//2, dilation_kernel_size//2, dilation_kernel_size//2, dilation_kernel_size//2), mode='constant', value=0)
+            dilated_mask = torch.nn.functional.max_pool2d(padded_mask, kernel_size=dilation_kernel_size, stride=1, padding=0)
+            swapped_face_true_contour_mask = dilated_mask
+            # Ensure it's still binary after dilation (max_pool2d on 0/1 mask should keep it 0/1)
+            # swapped_face_true_contour_mask = (swapped_face_true_contour_mask > 0).float() # Re-binarize just in case
 
         swap = torch.mul(swap, swap_mask)          
 

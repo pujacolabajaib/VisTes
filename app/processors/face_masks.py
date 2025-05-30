@@ -67,7 +67,7 @@ class FaceMasks:
             self.models_processor.syncvec.cpu()
         self.models_processor.models['Occluder'].run_with_iobinding(io_binding)
 
-    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0):
+    def apply_dfl_xseg(self, img, amount, mouth, parameters, dfl_inside_amount: float = 1.0, dfl_outside_amount: float = 1.0, swapped_contour_mask_256=None):
         amount2 = -parameters["DFLXSeg2SizeSlider"]
         
         face_threshold_slider_val = parameters.get('DFLXSegFaceThresholdSlider', 20) 
@@ -83,7 +83,23 @@ class FaceMasks:
 
         raw_xseg_output = torch.clamp(raw_xseg_output, min=0.0, max=1.0)
         
-        face_region_mask = raw_xseg_output < face_threshold
+        current_xseg_face_region = raw_xseg_output < face_threshold
+        if swapped_contour_mask_256 is not None:
+            # Ensure swapped_contour_mask_256 is on the same device and is boolean
+            swapped_contour_mask_256_bool = (swapped_contour_mask_256 > 0.5).to(current_xseg_face_region.device)
+            # If swapped_contour_mask_256 has a channel dimension (e.g., 1x256x256), squeeze it.
+            if swapped_contour_mask_256_bool.dim() == 3 and swapped_contour_mask_256_bool.shape[0] == 1:
+                swapped_contour_mask_256_bool = swapped_contour_mask_256_bool.squeeze(0)
+            
+            # Check for shape mismatch (e.g. if current_xseg_face_region is 256x256)
+            if swapped_contour_mask_256_bool.shape == current_xseg_face_region.shape:
+                face_region_mask = current_xseg_face_region | swapped_contour_mask_256_bool
+            else:
+                # Fallback if shapes don't match, or log a warning
+                print(f"Warning: Shape mismatch between XSeg region and swapped contour mask. XSeg shape: {current_xseg_face_region.shape}, Swapped contour shape: {swapped_contour_mask_256_bool.shape}")
+                face_region_mask = current_xseg_face_region
+        else:
+            face_region_mask = current_xseg_face_region
         
         modulated_xseg_output = torch.zeros_like(raw_xseg_output)
         modulated_xseg_output[face_region_mask] = raw_xseg_output[face_region_mask] * dfl_inside_amount

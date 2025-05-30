@@ -509,7 +509,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'decimals': 2,
             'parentToggle': 'DFLXSegEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Threshold to distinguish face from background for DFL XSeg. Lower values expand the "inside" area. (Value / 100)'
+            'help': 'Threshold to distinguish face from background for DFL XSeg. Higher values expand the "inside" area, while lower values make it tighter/more confident. (Value / 100)'
         },
         'XSeg2BlurSlider': {
             'level': 1,
