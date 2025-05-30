@@ -952,6 +952,8 @@ class FrameWorker(threading.Thread):
                 add_regional_adjustment('DFLXSegEyesAmountSlider', ['left_eye', 'right_eye'], combine_op='max')
                 add_regional_adjustment('DFLXSegNoseAmountSlider', 'nose')
                 add_regional_adjustment('DFLXSegHairAmountSlider', 'hair')
+                add_regional_adjustment('DFLXSegLipsAmountSlider', ['upper_lip', 'lower_lip', 'inner_mouth'], combine_op='max')
+
 
             img_mask = self.models_processor.apply_dfl_xseg(
                 original_face_256, 
@@ -1199,7 +1201,7 @@ class FrameWorker(threading.Thread):
 
         # Restorer2
         if parameters["FaceRestorerEnable2Toggle"]:
-            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider'])
+            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeightDecimalSlider'], control['DetectorScoreSlider'])
             alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
             swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap, 1 - alpha_restorer2))                            
 
@@ -1255,6 +1257,43 @@ class FrameWorker(threading.Thread):
         # Combine border and swap mask, scale, and apply to swap
         swap_mask = torch.mul(swap_mask, border_mask)
         swap_mask = t512_mask(swap_mask)
+
+        # Lips Edge Smoothing
+        lips_edge_smoothness = parameters.get('LipsEdgeSmoothnessSlider', 0)
+        if lips_edge_smoothness > 0 and individual_raw_masks_swapped: # Check if dict is populated
+            ul_mask_raw = individual_raw_masks_swapped.get('upper_lip')
+            ll_mask_raw = individual_raw_masks_swapped.get('lower_lip')
+            im_mask_raw = individual_raw_masks_swapped.get('inner_mouth')
+
+            precise_lips_mask_512 = None
+            lip_parts_to_combine = []
+            if ul_mask_raw is not None:
+                lip_parts_to_combine.append(ul_mask_raw.float().to(swap.device))
+            if ll_mask_raw is not None:
+                lip_parts_to_combine.append(ll_mask_raw.float().to(swap.device))
+            if im_mask_raw is not None:
+                lip_parts_to_combine.append(im_mask_raw.float().to(swap.device))
+
+            if lip_parts_to_combine:
+                precise_lips_mask_512 = lip_parts_to_combine[0]
+                for i in range(1, len(lip_parts_to_combine)):
+                    precise_lips_mask_512 = torch.max(precise_lips_mask_512, lip_parts_to_combine[i])
+                # precise_lips_mask_512 is 1x512x512, float 0 or 1
+
+            if precise_lips_mask_512 is not None:
+                kernel_size = int(lips_edge_smoothness) * 2 + 1 # Ensure odd kernel
+                sigma = float(lips_edge_smoothness) * 0.5 + 0.5 # Small sigma based on smoothness
+
+                # Isolate the lip component of the current swap_mask
+                # Ensure precise_lips_mask_512 is broadcastable to swap_mask if swap_mask is CxHxW and precise_lips_mask_512 is 1xHxW
+                # Assuming swap_mask is 1x512x512 at this point, matching precise_lips_mask_512
+                swap_mask_lips_component = swap_mask * precise_lips_mask_512
+
+                # Blur this isolated component
+                blurred_swap_mask_lips_component = transforms.GaussianBlur(kernel_size, sigma)(swap_mask_lips_component)
+
+                # Recombine: outside lips, use original swap_mask. Inside lips, use blurred lips component.
+                swap_mask = torch.where(precise_lips_mask_512.bool(), blurred_swap_mask_lips_component, swap_mask)
 
         # kps_swapped_face_all_for_current_swap is now initialized at the top of swap_core
         if parameters.get("DFLXSegEnableToggle", False): # This 'if' is for the landmark detection logic itself

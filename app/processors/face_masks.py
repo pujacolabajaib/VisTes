@@ -102,7 +102,9 @@ class FaceMasks:
             face_region_mask = current_xseg_face_region
         
         modulated_xseg_output = torch.zeros_like(raw_xseg_output)
+        # Handle inside region (remains unchanged)
         modulated_xseg_output[face_region_mask] = raw_xseg_output[face_region_mask] * dfl_inside_amount
+        # Handle outside region with simple multiplication
         modulated_xseg_output[~face_region_mask] = raw_xseg_output[~face_region_mask] * dfl_outside_amount
         
         modulated_xseg_output = torch.clamp(modulated_xseg_output, 0.0, 1.0)

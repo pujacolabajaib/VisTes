@@ -544,6 +544,17 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Adjusts DFL XSeg dilation/erosion specifically for the nose region. Positive values dilate, negative values erode.'
         },
+        'DFLXSegLipsAmountSlider': {
+            'level': 2,
+            'label': 'DFL Lips Amount',
+            'min_value': '-20',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjusts DFL XSeg dilation/erosion specifically for the combined lip regions (upper, lower, inner mouth). Positive values dilate, negative values erode the DFL mask here.'
+        },
         'DFLXSegHairAmountSlider': {
             'level': 2,
             'label': 'DFL Hair Amount',
@@ -1299,7 +1310,16 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': '0',
             'step': 1,
             'help': 'Combined masks blending distance. It is not applied to the border masks.'
-        },        
+        },
+        'LipsEdgeSmoothnessSlider': {
+            'level': 1,
+            'label': 'Lips Edge Smoothness',
+            'min_value': '0',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'help': 'Controls feathering/smoothing of the final swap mask at lip edges. Higher values mean smoother transitions. 0 to disable.'
+        }
     },
     'Face Landmarks Correction': {
         'FaceAdjEnableToggle': {
