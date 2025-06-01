@@ -55,6 +55,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'step': 1,
             'help': 'Set the maximum FPS of the video when playing'
         },
+        'EnableOpticalFlowWarpToggle': {
+            'level': 1,
+            'label': 'Aktifkan Warping Berbasis Optical Flow',
+            'default': False,
+            'help': 'Menggunakan optical flow untuk memandu warping wajah agar lebih mengikuti gerakan mikro wajah target di video.'
+        },
     },
     'Auto Swap':{
         'AutoSwapToggle': {
@@ -159,6 +165,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Show Bounding Boxes',
             'default': False,
             'help': 'Draw bounding boxes to all detected faces in the frame'
+        },
+        'EnableLandmarkStabilizationToggle': {
+            'level': 1,
+            'label': 'Aktifkan Stabilisasi Landmark Temporal',
+            'default': False,
+            'help': 'Menerapkan filter temporal pada landmark wajah untuk mengurangi jitter di video.'
         }
     },
     'DFM Settings':{

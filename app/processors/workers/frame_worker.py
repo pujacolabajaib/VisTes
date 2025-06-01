@@ -41,6 +41,9 @@ class FrameWorker(threading.Thread):
         self.is_view_face_compare: bool = False
         self.is_view_face_mask: bool = False
         self.lock = threading.Lock()
+        self.previous_landmarks = {}
+        self.landmark_stabilization_alpha = 0.5
+        self.previous_frame_for_optflow = None
         
     def run(self):
         try:
@@ -120,6 +123,8 @@ class FrameWorker(threading.Thread):
         img = torch.from_numpy(self.frame.astype('uint8')).to(self.models_processor.device) #HxWxc
         img = img.permute(2,0,1)#cxHxW
 
+        optical_flow_matrix = None
+
         #Scale up frame if it is smaller than 512
         img_x = img.size()[2]
         img_y = img.size()[1]
@@ -157,6 +162,23 @@ class FrameWorker(threading.Thread):
         if control['ManualRotationEnableToggle']:
             img = v2.functional.rotate(img, angle=control['ManualRotationAngleSlider'], interpolation=v2.InterpolationMode.BILINEAR, expand=True)
 
+        current_frame_for_optflow = img.clone() # For optical flow calculation
+        if control.get('EnableOpticalFlowWarp') and self.previous_frame_for_optflow is not None:
+            # Ensure tensors are on CPU for numpy conversion for cv2
+            # Assuming img is CHW, RGB, uint8 [0-255] or float [0-255]
+            prev_np_uint8 = self.previous_frame_for_optflow.cpu().numpy().transpose(1, 2, 0)
+            if prev_np_uint8.dtype != np.uint8:
+                prev_np_uint8 = prev_np_uint8.astype(np.uint8)
+
+            current_np_uint8 = current_frame_for_optflow.cpu().numpy().transpose(1, 2, 0)
+            if current_np_uint8.dtype != np.uint8:
+                current_np_uint8 = current_np_uint8.astype(np.uint8)
+
+            prev_gray = cv2.cvtColor(prev_np_uint8, cv2.COLOR_RGB2GRAY)
+            current_gray = cv2.cvtColor(current_np_uint8, cv2.COLOR_RGB2GRAY)
+
+            optical_flow_matrix = cv2.calcOpticalFlowFarneback(prev_gray, current_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+
         use_landmark_detection=control['LandmarkDetectToggle']
         landmark_detect_mode=control['LandmarkDetectModelSelection']
         from_points = control["DetectFromPointsToggle"]
@@ -178,6 +200,47 @@ class FrameWorker(threading.Thread):
                 face_kps_all = kpss[i]
                 face_emb, _ = self.models_processor.run_recognize_direct(img, face_kps_5, control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                 det_faces_data.append({'kps_5': face_kps_5, 'kps_all': face_kps_all, 'embedding': face_emb, 'bbox': bboxes[i]})
+
+        if control.get('EnableLandmarkStabilization'):
+            if len(det_faces_data) != len(self.previous_landmarks):
+                self.previous_landmarks.clear()
+
+            for i, fface in enumerate(det_faces_data):
+                face_id = i  # Using index as a simple face ID
+                current_kps_all = fface.get('kps_all')
+
+                if current_kps_all is not None and current_kps_all.size > 0:
+                    if face_id in self.previous_landmarks:
+                        previous_kps_all = self.previous_landmarks[face_id]
+                        if previous_kps_all.shape == current_kps_all.shape:
+                            stabilized_kps_all = (previous_kps_all * self.landmark_stabilization_alpha) + \
+                                                 (current_kps_all * (1 - self.landmark_stabilization_alpha))
+                            fface['kps_all'] = stabilized_kps_all
+
+                            # Update kps_5 from stabilized_kps_all
+                            num_landmarks = stabilized_kps_all.shape[0]
+                            if num_landmarks == 68:
+                                fface['kps_5'], _ = faceutil.convert_face_landmark_68_to_5(stabilized_kps_all, [])
+                            elif num_landmarks == 98:
+                                fface['kps_5'], _ = faceutil.convert_face_landmark_98_to_5(stabilized_kps_all, [])
+                            elif num_landmarks == 106:
+                                fface['kps_5'] = faceutil.convert_face_landmark_106_to_5(stabilized_kps_all)
+                            elif num_landmarks == 203:
+                                fface['kps_5'] = faceutil.convert_face_landmark_203_to_5(stabilized_kps_all)
+                            elif num_landmarks == 478:
+                                fface['kps_5'] = faceutil.convert_face_landmark_478_to_5(stabilized_kps_all)
+                            # Add more conditions if other landmark counts are common and need conversion
+
+                            self.previous_landmarks[face_id] = stabilized_kps_all.copy()
+                        else:
+                            # Shape mismatch, reset for this face
+                            self.previous_landmarks[face_id] = current_kps_all.copy()
+                    else:
+                        self.previous_landmarks[face_id] = current_kps_all.copy()
+                # If current_kps_all is None or empty, it will be handled by the clear outside the loop if face counts differ
+        else:
+            # Landmark stabilization is not enabled, or no faces detected
+            self.previous_landmarks.clear()
 
         compare_mode = self.is_view_face_mask or self.is_view_face_compare
         
@@ -205,7 +268,7 @@ class FrameWorker(threading.Thread):
 
                                 # swap_core function is executed even if 'Swap Faces' button is disabled,
                                 # because it also returns the original face and face mask 
-                                img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], fface['kps_all'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=parameters, control=control, dfm_model=dfm_model)
+                                img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], fface['kps_all'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=parameters, control=control, dfm_model=dfm_model, optical_flow=optical_flow_matrix)
                                         # cv2.imwrite('temp_swap_face.png', swapped_face.permute(1,2,0).cpu().numpy())
                                 #if self.main_window.editFacesButton.isChecked():
                                 #    img = self.swap_edit_face_core(img, fface['kps_all'], parameters, control)
@@ -230,6 +293,11 @@ class FrameWorker(threading.Thread):
         if img_x < 512 or img_y < 512:
             tscale_back = v2.Resize((img_y, img_x), antialias=False)
             img = tscale_back(img)
+
+        if control.get('EnableOpticalFlowWarp'):
+            self.previous_frame_for_optflow = current_frame_for_optflow.clone() # Already on device
+        else:
+            self.previous_frame_for_optflow = None
         
         img = img.permute(1,2,0)
         img = img.cpu().numpy()
@@ -725,8 +793,8 @@ class FrameWorker(threading.Thread):
         border_mask = gauss(border_mask)
         return border_mask
             
-    def swap_core(self, img, kps_5, kps=False, s_e=None, t_e=None, parameters=None, control=None, dfm_model=False): # img = RGB
-        kps_swapped_face_all_for_current_swap = None
+    def swap_core(self, img, kps_5, kps_all=None, s_e=None, t_e=None, parameters=None, control=None, dfm_model=False, optical_flow=None): # img = RGB
+        kps_swapped_face_all_for_current_swap = None # kps_all is the argument name for full landmarks
         swapped_face_true_contour_mask = None
         individual_raw_masks_swapped = {}
         s_e = s_e if isinstance(s_e, np.ndarray) else []
@@ -1248,6 +1316,41 @@ class FrameWorker(threading.Thread):
 
         #swap = swap.permute(1,2,0)
         
+        if optical_flow is not None and control.get('EnableOpticalFlowWarp') and kps_5 is not None and kps_5.size > 0:
+            # kps_5 are target face keypoints on the original full 'img' coordinates (before tform)
+            # optical_flow is also based on the original full 'img'
+            min_coords = np.min(kps_5, axis=0)
+            max_coords = np.max(kps_5, axis=0)
+            min_x, min_y = int(min_coords[0]), int(min_coords[1])
+            max_x, max_y = int(max_coords[0]), int(max_coords[1])
+
+            flow_h, flow_w = optical_flow.shape[:2]
+            min_x_clipped, max_x_clipped = np.clip([min_x, max_x], 0, flow_w - 1)
+            min_y_clipped, max_y_clipped = np.clip([min_y, max_y], 0, flow_h - 1)
+
+            if max_y_clipped > min_y_clipped and max_x_clipped > min_x_clipped:
+                flow_in_region = optical_flow[min_y_clipped:max_y_clipped, min_x_clipped:max_x_clipped]
+                if flow_in_region.size > 0:
+                    avg_flow = np.mean(flow_in_region, axis=(0, 1)) # (dx, dy)
+
+                    # tform is the transform from original image to 512x512 swap canvas.
+                    # We need to apply a translation on the swap canvas.
+                    # The avg_flow is in original image pixel units. Scale it by tform.scale.
+                    scaled_dx = avg_flow[0] * tform.scale
+                    scaled_dy = avg_flow[1] * tform.scale
+
+                    # Max translation to avoid extreme shifts, e.g., 10% of 512 = 51.2
+                    max_shift = 50.0
+                    scaled_dx = np.clip(scaled_dx, -max_shift, max_shift)
+                    scaled_dy = np.clip(scaled_dy, -max_shift, max_shift)
+
+                    if abs(scaled_dx) > 0.5 or abs(scaled_dy) > 0.5: # Only apply if significant
+                        # swap is CHW, float, [0-255], on device
+                        swap_np_hwc = swap.permute(1, 2, 0).cpu().numpy() # HWC for cv2
+                        M_flow = np.float32([[1, 0, scaled_dx], [0, 1, scaled_dy]])
+                        # warpAffine expects HWC if input is HWC
+                        warped_swap_np_hwc = cv2.warpAffine(swap_np_hwc, M_flow, (512, 512), borderMode=cv2.BORDER_REPLICATE)
+                        swap = torch.from_numpy(warped_swap_np_hwc).permute(2, 0, 1).to(swap.device, dtype=swap.dtype)
 
 
         # Add blur to swap_mask results
@@ -1789,9 +1892,10 @@ class FrameWorker(threading.Thread):
 
         return img
 
-    def swap_edit_face_core(self, img, kps, parameters, control, **kwargs): # img = RGB
+    def swap_edit_face_core(self, img, kps_all, parameters, control, **kwargs): # img = RGB
         # Grab 512 face from image and create 256 and 128 copys
         if parameters['FaceEditorEnableToggle']:
+            # kps here refers to kps_all
             # Scaling Transforms
             #t256 = v2.Resize((256, 256), interpolation=interpolation_method_affine, antialias=antialias_method)
 
@@ -1909,7 +2013,7 @@ class FrameWorker(threading.Thread):
             original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(img, lmk_crop, dsize=512, scale=parameters['FaceEditorCropScaleDecimalSlider'], vy_ratio=parameters['FaceEditorVYRatioDecimalSlider'], interpolation=interpolation_expression_faceeditor_back)
 
             out, mask_out = self.models_processor.apply_face_makeup(original_face_512, parameters)
-            if 1:
+            if 1: # This condition seems to be always true
                 gauss = transforms.GaussianBlur(5*2+1, (5+1)*0.2)
                 out = torch.clamp(torch.div(out, 255.0), 0, 1).type(torch.float32)
                 mask_crop = gauss(self.models_processor.lp_mask_crop)
