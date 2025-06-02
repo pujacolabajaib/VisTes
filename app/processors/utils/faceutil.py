@@ -1196,6 +1196,7 @@ def parse_rect_from_landmark(
     use_deg_flag=False,
     **kwargs
 ):
+    print(f"DEBUG_PARSE_RECT: Initial scale={scale}, vy_ratio={vy_ratio}") # Added print
     """parsing center, size, angle from 101/68/5/x landmarks
     vx_ratio: the offset ratio along the pupil axis x-axis, multiplied by size
     vy_ratio: the offset ratio along the pupil axis y-axis, multiplied by size, which is used to contain more forehead area

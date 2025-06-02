@@ -1554,11 +1554,11 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': True,
             'help': 'Use all detected landmarks (e.g., 203 or 478 points if available) for warping the target face. May improve expression preservation. Falls back to 5-point landmarks if disabled or detailed landmarks are not available.'
         },
-        'WarpScaleForDetailedKps': {
+        'WarpScaleForDetailedKpsDecimalSlider': {
             'level': 2,
             'label': 'Warp Scale (Detailed Lmks)',
-            'min_value': '0.5',
-            'max_value': '2.5',
+            'min_value': '0.7',
+            'max_value': '3.0',
             'default': '1.5',
             'decimals': 2,
             'step': 0.05,
@@ -1566,17 +1566,35 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Scale factor for warping when using detailed landmarks. Similar to LivePortrait crop scale. (Default: 1.5)'
         },
-        'WarpVYRatioForDetailedKps': {
+        'WarpVYRatioForDetailedKpsDecimalSlider': {
             'level': 2,
             'label': 'Warp V-Offset Ratio (Detailed Lmks)',
-            'min_value': '-0.5',
-            'max_value': '0.5',
+            'min_value': '-0.4',
+            'max_value': '0.4',
             'default': '-0.1',
             'decimals': 2,
             'step': 0.01,
             'parentToggle': 'UseDetailedKpsForWarpToggle',
             'requiredToggleValue': True,
             'help': 'Vertical offset ratio for warping with detailed landmarks. Similar to LivePortrait V-offset. (Default: -0.1)'
+        },
+        'UseTPSWarpingToggle': {
+            'level': 1,
+            'label': 'Use Thin Plate Spline (TPS) Warping',
+            'default': False,
+            'help': 'EXPERIMENTAL: Use TPS warping after global alignment for potentially more precise local feature alignment. Requires detailed landmarks. May be slower.'
+        },
+        'TPSRegularizationAlphaDecimalSlider': {
+            'level': 2,
+            'label': 'TPS Regularization Alpha',
+            'min_value': '0.0',
+            'max_value': '0.1',
+            'default': '0.01',
+            'decimals': 3,
+            'step': 0.001,
+            'parentToggle': 'UseTPSWarpingToggle',
+            'requiredToggleValue': True,
+            'help': 'Controls the "stiffness" of the TPS warp. Lower values (e.g., 0.0-0.001) fit landmarks more precisely. Higher values (e.g., 0.01-0.1) are more rigid. (Default: 0.01)'
         }
     },
 }
