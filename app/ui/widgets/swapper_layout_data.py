@@ -1546,5 +1546,37 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': 'False',
             'help': 'Experimental! most of the time no visual effect, in rare cases minor effect'
         }, 
-    },       
+    },
+    'Target Face Warping': {
+        'UseDetailedKpsForWarpToggle': {
+            'level': 1,
+            'label': 'Use Detailed Landmarks for Target Warp',
+            'default': True,
+            'help': 'Use all detected landmarks (e.g., 203 or 478 points if available) for warping the target face. May improve expression preservation. Falls back to 5-point landmarks if disabled or detailed landmarks are not available.'
+        },
+        'WarpScaleForDetailedKps': {
+            'level': 2,
+            'label': 'Warp Scale (Detailed Lmks)',
+            'min_value': '0.5',
+            'max_value': '2.5',
+            'default': '1.5',
+            'decimals': 2,
+            'step': 0.05,
+            'parentToggle': 'UseDetailedKpsForWarpToggle',
+            'requiredToggleValue': True,
+            'help': 'Scale factor for warping when using detailed landmarks. Similar to LivePortrait crop scale. (Default: 1.5)'
+        },
+        'WarpVYRatioForDetailedKps': {
+            'level': 2,
+            'label': 'Warp V-Offset Ratio (Detailed Lmks)',
+            'min_value': '-0.5',
+            'max_value': '0.5',
+            'default': '-0.1',
+            'decimals': 2,
+            'step': 0.01,
+            'parentToggle': 'UseDetailedKpsForWarpToggle',
+            'requiredToggleValue': True,
+            'help': 'Vertical offset ratio for warping with detailed landmarks. Similar to LivePortrait V-offset. (Default: -0.1)'
+        }
+    },
 }

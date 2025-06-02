@@ -804,19 +804,47 @@ class FrameWorker(threading.Thread):
         # parameters = self.parameters.copy()
         swapper_model = parameters['SwapModelSelection']
 
-        tform = self.get_face_similarity_tform(swapper_model, kps_5)
+        # Conditional block for using detailed landmarks
+        # Ensure the decision strictly respects the UseDetailedKpsForWarpToggle from parameters
+        if kps_all is not None and kps_all.shape[0] > 5 and parameters['UseDetailedKpsForWarpToggle']:
+            dsize_warp = 512
+            scale_warp = parameters.get('WarpScaleForDetailedKps', 1.5) # .get() is fine here, as these are sub-parameters
+            vy_ratio_warp = parameters.get('WarpVYRatioForDetailedKps', -0.1) # .get() is fine here
+            # interpolation_method_detailed_warp is interpolation_original_face_512 (global)
+
+            warped_target_face_512, M_o2c_detailed, M_c2o_detailed = faceutil.warp_face_by_face_landmark_x(
+                img, kps_all,
+                dsize=dsize_warp,
+                scale=scale_warp,
+                vy_ratio=vy_ratio_warp,
+                interpolation=interpolation_original_face_512, # Use global
+                use_lip=True,
+                use_mean_eyes=False
+            )
+
+            tform = trans.SimilarityTransform()
+            tform.params[0:2] = M_o2c_detailed # This sets the forward transform.
+                                             # The SimilarityTransform object should handle inverse correctly.
+
+            original_face_512 = warped_target_face_512
+            # Derive other resolutions from the new original_face_512
+            original_face_384 = t384(original_face_512) # Ensure t384, t256, t128 are accessible
+            original_face_256 = t256(original_face_512)
+            original_face_128 = t128(original_face_256) # Usually derived from 256
+            original_faces = (original_face_512, original_face_384, original_face_256, original_face_128)
+
+        else:
+            # Fallback to 5-point landmarks (original logic)
+            tform = self.get_face_similarity_tform(swapper_model, kps_5)
+            original_face_512, original_face_384, original_face_256, original_face_128 = self.get_transformed_and_scaled_faces(tform, img)
+            original_faces = (original_face_512, original_face_384, original_face_256, original_face_128)
+
         t512_mask = v2.Resize((512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
         t384_mask = v2.Resize((384, 384), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
         t256_mask = v2.Resize((256, 256), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
         t128_mask = v2.Resize((128, 128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
 
-        # Grab 512 face from image and create 256 and 128 copys
-        #print("img type vor: ", img.dtype)
-        #img = img.float()
-        #print("img type: ", img.dtype)
-        original_face_512, original_face_384, original_face_256, original_face_128 = self.get_transformed_and_scaled_faces(tform, img)
-        original_faces = (original_face_512, original_face_384, original_face_256, original_face_128)
-        dim=1
+        dim=1 # Default dim, will be updated by get_affined_face_dim_and_swapping_latents
         if (s_e is not None and len(s_e) > 0) or (swapper_model == 'DeepFaceLive (DFM)' and dfm_model):
 
             input_face_affined, dfm_model, dim, latent = self.get_affined_face_dim_and_swapping_latents(original_faces, swapper_model, dfm_model, s_e, t_e, parameters, tform)
