@@ -1577,24 +1577,6 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'UseDetailedKpsForWarpToggle',
             'requiredToggleValue': True,
             'help': 'Vertical offset ratio for warping with detailed landmarks. Similar to LivePortrait V-offset. (Default: -0.1)'
-        },
-        'UseTPSWarpingToggle': {
-            'level': 1,
-            'label': 'Use Thin Plate Spline (TPS) Warping',
-            'default': False,
-            'help': 'EXPERIMENTAL: Use TPS warping after global alignment for potentially more precise local feature alignment. Requires detailed landmarks. May be slower.'
-        },
-        'TPSRegularizationAlphaDecimalSlider': {
-            'level': 2,
-            'label': 'TPS Regularization Alpha',
-            'min_value': '0.0',
-            'max_value': '0.1',
-            'default': '0.01',
-            'decimals': 3,
-            'step': 0.001,
-            'parentToggle': 'UseTPSWarpingToggle',
-            'requiredToggleValue': True,
-            'help': 'Controls the "stiffness" of the TPS warp. Lower values (e.g., 0.0-0.001) fit landmarks more precisely. Higher values (e.g., 0.01-0.1) are more rigid. (Default: 0.01)'
         }
     },
 }
