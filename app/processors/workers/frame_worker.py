@@ -808,10 +808,12 @@ class FrameWorker(threading.Thread):
         # NEW CONDITIONAL BLOCK STARTS HERE for global warping method
         # Ensure the decision strictly respects the UseDetailedKpsForWarpToggle from parameters
         if kps_all is not None and kps_all.shape[0] > 5 and parameters.get('UseDetailedKpsForWarpToggle', False):
-            print("DEBUG_SWAP_CORE: Using DETAILED landmarks for global warp.")
             dsize_warp = 512 # Standard size for original_face_512
             scale_warp = parameters.get('WarpScaleForDetailedKpsDecimalSlider', 1.5)
             vy_ratio_warp = parameters.get('WarpVYRatioForDetailedKpsDecimalSlider', -0.1)
+
+            # Read the new toggle's state
+            use_mean_eyes_for_detailed_warp = control.get('WarpDetailedUseMeanEyesToggle', False)
 
             warped_target_face_512, M_o2c_detailed, _ = faceutil.warp_face_by_face_landmark_x(
                 img, kps_all,
@@ -819,8 +821,8 @@ class FrameWorker(threading.Thread):
                 scale=scale_warp,
                 vy_ratio=vy_ratio_warp,
                 interpolation=interpolation_original_face_512,
-                use_lip=True,
-                use_mean_eyes=False
+                use_lip=True, # This remains hardcoded as True for now
+                use_mean_eyes=use_mean_eyes_for_detailed_warp # Use the value from the control
             )
 
             tform = trans.SimilarityTransform()
@@ -1444,34 +1446,67 @@ class FrameWorker(threading.Thread):
             # The 'swap' tensor is CHW, typically float32, range 0-255 at this point.
             # The landmark detectors (e.g., LandmarkDetector203Model) internally handle
             # conversion to float and normalization (e.g., .float() / 255.0).
-            current_swap_for_lmk = swap.clone()
 
-            # Corrected call:
-            # run_detect_landmark returns: kps_5, kps_all, scores (scores might be for kps_5 or kps_all depending on detector)
-            # We need kps_all for the contour.
-            # The variable kps_swapped_face_all_for_current_swap should already be initialized to None before this conditional block.
+                # Initialize kps_swapped_face_all_for_current_swap to None before conditional logic
+                kps_swapped_face_all_for_current_swap = None
+                transformed_original_kps_used = False
 
-            temp_kps_5, temp_kps_all, _ = self.models_processor.face_landmark_detectors.run_detect_landmark(
-                    img=current_swap_for_lmk,
-                    bbox=swapped_face_bbox,
-                    det_kpss=np.array([], dtype=np.float32), # Ensure det_kpss is a numpy array, even if empty
-                    detect_mode=landmark_mode_for_swapped,
-                    score=parameters.get('LandmarkDetectScoreSlider', 40.0)/100.0, # This score is often for kps_5
-                    from_points=False
-                )
+                if control.get('DFLXSegUseOriginalLandmarksToggle', False):
+                    if kps_all is not None and hasattr(kps_all, 'shape') and kps_all.shape[0] > 0 and tform is not None:
+                        try:
+                            # tform.params[0:2] is the M_o2c matrix (original to canonical)
+                            # Ensure kps_all is a numpy array for faceutil.trans_points
+                            numpy_kps_all = np.array(kps_all) if not isinstance(kps_all, np.ndarray) else kps_all
 
-            if isinstance(temp_kps_all, np.ndarray) and temp_kps_all.size > 0:
-                kps_swapped_face_all_for_current_swap = temp_kps_all
-            else:
-                # If temp_kps_all is empty or not an ndarray, try to use temp_kps_5 if it's populated
-                # (some detectors might only populate kps_5 if kps_all is not their primary output type for 'all')
-                # This is a fallback, ideally landmark_mode_for_swapped ('203') should yield temp_kps_all.
-                if isinstance(temp_kps_5, np.ndarray) and temp_kps_5.size > 0 and landmark_mode_for_swapped == '5': # Only use kps_5 if mode was '5'
-                     kps_swapped_face_all_for_current_swap = temp_kps_5
-                else:
-                     kps_swapped_face_all_for_current_swap = None # Ensure it remains None if no valid landmarks found
+                            # Check if kps_all are 2D or 3D and transform accordingly
+                            # faceutil.trans_points handles both 2D and 3D points
+                            transformed_kps = faceutil.trans_points(numpy_kps_all, tform.params[0:2])
 
-        # swapped_face_true_contour_mask is now initialized at the top of swap_core
+                            # Ensure landmarks are within the bounds of the 512x512 canvas
+                            # This step might be important if original landmarks were near edge of a different aspect ratio source
+                            transformed_kps[:, 0] = np.clip(transformed_kps[:, 0], 0, 511)
+                            transformed_kps[:, 1] = np.clip(transformed_kps[:, 1], 0, 511)
+
+                            kps_swapped_face_all_for_current_swap = transformed_kps
+                            transformed_original_kps_used = True
+                        except Exception as e:
+                            transformed_original_kps_used = False # Fallback on error
+                    else:
+                        pass
+
+                if not transformed_original_kps_used:
+                    # This 'if' block now becomes the fallback logic
+                    # The existing code for re-detecting landmarks on current_swap_for_lmk follows here
+                    # Ensure it's properly indented under this 'if not transformed_original_kps_used:'
+                    current_swap_for_lmk = swap.clone()
+                    swapped_face_bbox = [0, 0, 511, 511]
+                    landmark_mode_for_swapped = control.get('LandmarkDetectModelSelection', '203')
+                    if landmark_mode_for_swapped == "5": # Ensure it's a multi-point model
+                        landmark_mode_for_swapped = "203"
+
+                    # Corrected call:
+                    # run_detect_landmark returns: kps_5, kps_all, scores (scores might be for kps_5 or kps_all depending on detector)
+                    # We need kps_all for the contour.
+                    # The variable kps_swapped_face_all_for_current_swap should already be initialized to None before this conditional block.
+
+                    temp_kps_5, temp_kps_all, _ = self.models_processor.face_landmark_detectors.run_detect_landmark(
+                        img=current_swap_for_lmk,
+                        bbox=swapped_face_bbox,
+                        det_kpss=np.array([], dtype=np.float32), # Ensure det_kpss is a numpy array, even if empty
+                        detect_mode=landmark_mode_for_swapped,
+                        score=parameters.get('LandmarkDetectScoreSlider', 40.0)/100.0, # This score is often for kps_5
+                        from_points=False
+                    )
+                    # THIS IS THE MOVED BLOCK: Process temp_kps_all and temp_kps_5 here
+                    if isinstance(temp_kps_all, np.ndarray) and temp_kps_all.size > 0:
+                        kps_swapped_face_all_for_current_swap = temp_kps_all
+                    else:
+                        # Fallback to temp_kps_5 if temp_kps_all is not suitable
+                        if isinstance(temp_kps_5, np.ndarray) and temp_kps_5.size > 0 and landmark_mode_for_swapped == '5': # Or any other condition that makes temp_kps_5 preferable
+                            kps_swapped_face_all_for_current_swap = temp_kps_5
+                        # else kps_swapped_face_all_for_current_swap remains None if no valid landmarks from re-detection
+
+        # Now, kps_swapped_face_all_for_current_swap is used later to create the convex hull mask
         if kps_swapped_face_all_for_current_swap is not None and len(kps_swapped_face_all_for_current_swap) > 0:
             # Ensure kps are integers for cv2.convexHull and cv2.fillConvexPoly
             # Landmarks are usually float, convert to int32 for OpenCV

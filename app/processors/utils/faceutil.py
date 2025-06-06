@@ -1194,9 +1194,9 @@ def parse_rect_from_landmark(
     vx_ratio=0,
     vy_ratio=0,
     use_deg_flag=False,
+    use_mean_eyes=False,
     **kwargs
 ):
-    print(f"DEBUG_PARSE_RECT: Initial scale={scale}, vy_ratio={vy_ratio}") # Added print
     """parsing center, size, angle from 101/68/5/x landmarks
     vx_ratio: the offset ratio along the pupil axis x-axis, multiplied by size
     vy_ratio: the offset ratio along the pupil axis y-axis, multiplied by size, which is used to contain more forehead area
@@ -1286,6 +1286,7 @@ def _estimate_similar_transform_from_pts(
     vx_ratio=0,
     vy_ratio=-0.1,
     flag_do_rot=True,
+    use_mean_eyes=False,
     **kwargs
 ):
     """ calculate the affine matrix of the cropped image from sparse points, the original image to the cropped image, the inverse is the cropped image to the original image
@@ -1327,7 +1328,7 @@ def _estimate_similar_transform_from_pts(
     # M_INV is from the original image to the cropped image, M is from the cropped image to the original image
     return M_INV, M[:2, ...]
 
-def warp_face_by_face_landmark_x(img, pts, **kwargs):
+def warp_face_by_face_landmark_x(img, pts, use_mean_eyes=False, **kwargs):
     dsize = kwargs.get('dsize', 224)  # 512
     scale = kwargs.get('scale', 1.5)  # 1.5 | 1.6 | 2.5
     vy_ratio = kwargs.get('vy_ratio', -0.1)  # -0.0625 | -0.1 | -0.125
