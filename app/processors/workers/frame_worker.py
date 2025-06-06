@@ -1352,40 +1352,99 @@ class FrameWorker(threading.Thread):
         #swap = swap.permute(1,2,0)
         
         if optical_flow is not None and control.get('EnableOpticalFlowWarp') and kps_5 is not None and kps_5.size > 0:
-            # kps_5 are target face keypoints on the original full 'img' coordinates (before tform)
-            # optical_flow is also based on the original full 'img'
-            min_coords = np.min(kps_5, axis=0)
-            max_coords = np.max(kps_5, axis=0)
-            min_x, min_y = int(min_coords[0]), int(min_coords[1])
-            max_x, max_y = int(max_coords[0]), int(max_coords[1])
+            # Retrieve toggle state from parameters due to main_ui.py structure
+            if parameters.get('EnableDenseOpticalFlowWarpToggle', False):
+                # Store original swap tensor before warping
+                original_swap_tensor_for_opt_flow_blend = swap.clone()
 
-            flow_h, flow_w = optical_flow.shape[:2]
-            min_x_clipped, max_x_clipped = np.clip([min_x, max_x], 0, flow_w - 1)
-            min_y_clipped, max_y_clipped = np.clip([min_y, max_y], 0, flow_h - 1)
+                # Dense warp using cv2.remap
+                # swap is CHW, RGB, float, [0-255], on device
+                swap_np_bhwc = swap.permute(1, 2, 0).cpu().numpy() # HWC for cv2.remap
+                swap_np_bhwc_bgr = swap_np_bhwc[..., ::-1].astype(np.uint8) # Ensure BGR and uint8
 
-            if max_y_clipped > min_y_clipped and max_x_clipped > min_x_clipped:
-                flow_in_region = optical_flow[min_y_clipped:max_y_clipped, min_x_clipped:max_x_clipped]
-                if flow_in_region.size > 0:
-                    avg_flow = np.mean(flow_in_region, axis=(0, 1)) # (dx, dy)
+                h, w = swap_np_bhwc_bgr.shape[:2] # Should be 512x512
 
-                    # tform is the transform from original image to 512x512 swap canvas.
-                    # We need to apply a translation on the swap canvas.
-                    # The avg_flow is in original image pixel units. Scale it by tform.scale.
-                    scaled_dx = avg_flow[0] * tform.scale
-                    scaled_dy = avg_flow[1] * tform.scale
+                # 1. Create a map of coordinates for the 512x512 swap image
+                grid_y, grid_x = torch.meshgrid(torch.arange(h, device=swap.device), torch.arange(w, device=swap.device), indexing='ij')
+                # grid_x, grid_y are (H, W)
+                # stacked_grid are (H, W, 2) where each element is (x,y)
+                stacked_grid = torch.stack((grid_x, grid_y), dim=-1).float() # HxWx2
 
-                    # Max translation to avoid extreme shifts, e.g., 10% of 512 = 51.2
-                    max_shift = 50.0
-                    scaled_dx = np.clip(scaled_dx, -max_shift, max_shift)
-                    scaled_dy = np.clip(scaled_dy, -max_shift, max_shift)
+                # 2. Transform these 512x512 coordinates back to the original full-resolution image coordinates
+                # tform.params is a 3x3 matrix. We need the inverse for mapping swap canvas to original image.
+                M_inv = torch.from_numpy(tform.inverse.params).float().to(swap.device)
 
-                    if abs(scaled_dx) > 0.5 or abs(scaled_dy) > 0.5: # Only apply if significant
-                        # swap is CHW, float, [0-255], on device
-                        swap_np_hwc = swap.permute(1, 2, 0).cpu().numpy() # HWC for cv2
-                        M_flow = np.float32([[1, 0, scaled_dx], [0, 1, scaled_dy]])
-                        # warpAffine expects HWC if input is HWC
-                        warped_swap_np_hwc = cv2.warpAffine(swap_np_hwc, M_flow, (512, 512), borderMode=cv2.BORDER_REPLICATE)
-                        swap = torch.from_numpy(warped_swap_np_hwc).permute(2, 0, 1).to(swap.device, dtype=swap.dtype)
+                # Reshape stacked_grid to (N, 2) where N = H*W
+                flat_grid = stacked_grid.reshape(-1, 2) # (H*W, 2)
+                # Add homogeneous coordinate
+                homogeneous_grid = torch.cat([flat_grid, torch.ones(flat_grid.shape[0], 1, device=swap.device)], dim=1) # (H*W, 3)
+
+                transformed_coords_homogeneous = torch.matmul(homogeneous_grid, M_inv.T) # (H*W, 3)
+
+                transformed_coords_flat = transformed_coords_homogeneous[:, :2] # (H*W, 2)
+                original_coords = transformed_coords_flat.reshape(h, w, 2) # (H, W, 2) with (x,y) in original image space
+
+                # 3. Sample the optical_flow at these transformed coordinates
+                sample_map_x = original_coords[..., 0].cpu().numpy().astype(np.float32)
+                sample_map_y = original_coords[..., 1].cpu().numpy().astype(np.float32)
+
+                sampled_flow_vectors = cv2.remap(optical_flow, sample_map_x, sample_map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                # sampled_flow_vectors is (H_swap, W_swap, 2) numpy array with (dx, dy) from original image scale
+
+                # 4. Add these sampled flow vectors to the original 512x512 map coordinates
+                # Flow is (dx, dy). A positive dx means motion to the right.
+                # So, the pixel at (x,y) in current frame *came from* (x-dx, y-dy) in previous frame.
+                source_coords_in_original_frame = original_coords.cpu().numpy() - sampled_flow_vectors # HxWx2
+
+                # Now, transform source_coords_in_original_frame back to the swap canvas coordinates using tform.
+                M_fwd = torch.from_numpy(tform.params).float().to(swap.device)
+                source_coords_flat = torch.from_numpy(source_coords_in_original_frame.reshape(-1, 2)).float().to(swap.device) # (H*W, 2)
+                homogeneous_source_coords = torch.cat([source_coords_flat, torch.ones(source_coords_flat.shape[0], 1, device=swap.device)], dim=1) # (H*W, 3)
+
+                final_map_coords_homogeneous = torch.matmul(homogeneous_source_coords, M_fwd.T) # (H*W, 3)
+                final_map_coords_flat = final_map_coords_homogeneous[:, :2] # (H*W, 2)
+
+                final_map_x = final_map_coords_flat[:, 0].reshape(h, w).cpu().numpy().astype(np.float32)
+                final_map_y = final_map_coords_flat[:, 1].reshape(h, w).cpu().numpy().astype(np.float32)
+
+                warped_swap_np_bhwc_bgr = cv2.remap(swap_np_bhwc_bgr, final_map_x, final_map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+                # Convert back to PyTorch tensor (CHW, RGB)
+                warped_swap_np_bhwc_rgb = warped_swap_np_bhwc_bgr[..., ::-1].astype(np.float32) # HWC, RGB
+                densely_warped_swap_tensor = torch.from_numpy(warped_swap_np_bhwc_rgb).permute(2, 0, 1).to(swap.device, dtype=swap.dtype)
+
+                # Apply strength/blending
+                opt_flow_strength = parameters.get('OpticalFlowStrengthSlider', 100) / 100.0
+                swap = (1.0 - opt_flow_strength) * original_swap_tensor_for_opt_flow_blend + opt_flow_strength * densely_warped_swap_tensor
+                swap = torch.clamp(swap, 0.0, 255.0)
+
+
+            else:
+                # Original translation-based warp
+                min_coords = np.min(kps_5, axis=0)
+                max_coords = np.max(kps_5, axis=0)
+                min_x, min_y = int(min_coords[0]), int(min_coords[1])
+                max_x, max_y = int(max_coords[0]), int(max_coords[1])
+
+                flow_h, flow_w = optical_flow.shape[:2]
+                min_x_clipped, max_x_clipped = np.clip([min_x, max_x], 0, flow_w - 1)
+                min_y_clipped, max_y_clipped = np.clip([min_y, max_y], 0, flow_h - 1)
+
+                if max_y_clipped > min_y_clipped and max_x_clipped > min_x_clipped:
+                    flow_in_region = optical_flow[min_y_clipped:max_y_clipped, min_x_clipped:max_x_clipped]
+                    if flow_in_region.size > 0:
+                        avg_flow = np.mean(flow_in_region, axis=(0, 1)) # (dx, dy)
+                        scaled_dx = avg_flow[0] * tform.scale
+                        scaled_dy = avg_flow[1] * tform.scale
+                        max_shift = 50.0
+                        scaled_dx = np.clip(scaled_dx, -max_shift, max_shift)
+                        scaled_dy = np.clip(scaled_dy, -max_shift, max_shift)
+
+                        if abs(scaled_dx) > 0.5 or abs(scaled_dy) > 0.5:
+                            swap_np_hwc = swap.permute(1, 2, 0).cpu().numpy()
+                            M_flow = np.float32([[1, 0, scaled_dx], [0, 1, scaled_dy]])
+                            warped_swap_np_hwc = cv2.warpAffine(swap_np_hwc, M_flow, (512, 512), borderMode=cv2.BORDER_REPLICATE)
+                            swap = torch.from_numpy(warped_swap_np_hwc).permute(2, 0, 1).to(swap.device, dtype=swap.dtype)
 
 
         # Add blur to swap_mask results

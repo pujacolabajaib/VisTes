@@ -1595,4 +1595,25 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'help': "If checked, uses the average of several landmarks for eye centers when 'Use Detailed Landmarks for Global Warp' is active. May improve stability if specific eye landmarks are noisy. Affects 98, 106, 203, 478 point sets."
         },
     },
+    'Optical Flow Warp': {
+        'EnableDenseOpticalFlowWarpToggle': {
+            'level': 1,
+            'label': 'Enable Dense Optical Flow Warp',
+            'widget_type': 'ToggleButton',
+            'default': False,
+            'description': "Uses a more precise method for optical flow warping (cv2.remap with dense flow field). May impact performance. Relies on 'Enable Optical Flow Warp' in Video Controls.",
+            'help': "Enable this to use a dense optical flow field for warping the swapped face, potentially improving temporal stability. The main 'Enable Optical Flow Warp' in Video Controls must also be active."
+        },
+        'OpticalFlowStrengthSlider': {
+            'level': 1,
+            'label': 'Optical Flow Strength',
+            'widget_type': 'ParameterSlider',
+            'min_value': '0',
+            'max_value': '100',
+            'default': '100', # Default to 100% for full effect when dense warp is on
+            'step': 1,
+            'description': "Controls the influence of the dense optical flow warp. 0% = no warp, 100% = full warp effect.",
+            'help': "Adjust the strength of the dense optical flow warp. Lower values will blend more of the unwarped face, higher values apply more of the dense warp."
+        },
+    },
 }
