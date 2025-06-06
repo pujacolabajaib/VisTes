@@ -102,10 +102,27 @@ class FaceMasks:
             face_region_mask = current_xseg_face_region
         
         modulated_xseg_output = torch.zeros_like(raw_xseg_output)
-        # Handle inside region (remains unchanged)
+        # Apply dfl_inside_amount to the face region
         modulated_xseg_output[face_region_mask] = raw_xseg_output[face_region_mask] * dfl_inside_amount
-        # Handle outside region with simple multiplication
-        modulated_xseg_output[~face_region_mask] = raw_xseg_output[~face_region_mask] * dfl_outside_amount
+
+        # For the outside region, first apply dfl_outside_amount, then significantly reduce any remaining values.
+        # This aims to make the non-face parts of the mask cleaner.
+        outside_values = raw_xseg_output[~face_region_mask] * dfl_outside_amount
+        # Optional: Further suppress outside values if dfl_outside_amount wasn't aggressive enough
+        # For example, by setting them to a very small fraction of their already modulated value or a fixed low value.
+        # For now, let's ensure they are at least scaled by dfl_outside_amount.
+        # A more aggressive approach could be:
+        # modulated_xseg_output[~face_region_mask] = outside_values * 0.1 # Further suppress by 90%
+        # Or, simply ensure they are low if dfl_outside_amount is not very small:
+        if dfl_outside_amount > 0.5: # If dfl_outside_amount is not already aggressively reducing
+             modulated_xseg_output[~face_region_mask] = outside_values * 0.2 # then reduce them further
+        else:
+             modulated_xseg_output[~face_region_mask] = outside_values
+
+        # The rest of the function continues:
+        # modulated_xseg_output = torch.clamp(modulated_xseg_output, 0.0, 1.0)
+        # modulated_xseg_output[modulated_xseg_output < 0.1] = 0
+        # ...
         
         modulated_xseg_output = torch.clamp(modulated_xseg_output, 0.0, 1.0)
         modulated_xseg_output[modulated_xseg_output < 0.1] = 0
